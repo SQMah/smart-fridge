@@ -115,7 +115,7 @@ void updatePeltierPWM(int channel, double dutyPercent)
 // Function to update fan PWM output with fan clamp logic
 void updateFanPWM(int channel, double dutyPercent)
 {
-  if (dutyPercent == 0)
+  if (dutyPercent == 0 || dutyPercent < peltierTwoSidedClamp)
   {
     // If PID output is 0, turn off the fan
     ledcWrite(channel, 0);
