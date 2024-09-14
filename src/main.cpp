@@ -8,13 +8,32 @@
 #include <SoftWire.h>
 #include <SHT31_SW.h>
 #include <BlynkSimpleEsp32.h>
+#include <PID_v1.h>
+#include <math.h> // Include math library for log functions
 
-// Replace with your network credentials
 const char *ssid = "Not wifi";
 const char *password = "Notapassword";
 
-// Define the number of sensors
 const int NUM_SENSORS = 2;
+const int PELTIER_HZ = 50000; // 50 kHz for Peltiers
+const int FAN_HZ = 20000;     // 20 kHz for fans
+
+// Function to calculate maximum resolution based on frequency
+int getMaxResolution(int frequency)
+{
+  double clock = 80000000.0; // APB clock is 80 MHz
+  double value = clock / frequency;
+  int resolution = (int)floor(log(value) / log(2));
+  return resolution;
+}
+
+// Calculate maximum resolutions based on frequencies
+const int PELTIER_RESOLUTION = getMaxResolution(PELTIER_HZ);
+const int FAN_RESOLUTION = getMaxResolution(FAN_HZ);
+
+// Maximum duty values based on resolutions
+const int MAX_PELTIER_DUTY = (1 << PELTIER_RESOLUTION) - 1;
+const int MAX_FAN_DUTY = (1 << FAN_RESOLUTION) - 1;
 
 // Create software I2C instances using SoftWire
 SoftWire swWires[NUM_SENSORS] = {
@@ -29,15 +48,101 @@ SHT31_SW sensors[NUM_SENSORS] = {
 
 // Blynk virtual pin arrays
 const int temperaturePins[NUM_SENSORS] = {V1, V0};
-const int humidityPins[NUM_SENSORS] = {V3, V2};
-const int heaterControlPin = V4; // Virtual pin for heater control button
 
-bool heaterState = false; // Variable to store the heater state
+// PWM-related definitions
+const int topPeltierPwmPin = 26;       // Pin for top fridge PWM signal
+const int bottomPeltierPwmPin = 27;    // Pin for bottom fridge PWM signal
+const int topFanPin = 32;              // Pin for top fan PWM signal
+const int bottomFanPin = 33;           // Pin for bottom fan PWM signal
+const int topPeltierPwmChannel = 0;    // PWM channel for top fridge
+const int bottomPeltierPwmChannel = 1; // PWM channel for bottom fridge
+const int topFanChannel = 2;           // PWM channel for top fan
+const int bottomFanChannel = 3;        // PWM channel for bottom fan
 
-// Function prototypes
-void readSHT30Sensors();
-void printSensorReadings(float humidity, float temperature, int sensorNumber, bool heaterState);
-bool readSHT30(SHT31_SW &sht, float &temperature, float &humidity, int sensorNumber, bool heaterState);
+double topSetPoint = 18.0;                          // Default set point for top fridge (18°C)
+double bottomSetPoint = 18.0;                       // Default set point for bottom fridge (18°C)
+double topTemperature, bottomTemperature;           // Measured temperatures
+double topPeltierOutputPwm, bottomPeltierOutputPwm; // PID outputs
+
+// Threshold for clamping PWM to LOW or HIGH
+const double peltierTwoSidedClamp = 5.0; // 5% threshold for clamping
+
+// Fan clamp percentage (minimum speed)
+double fanClamp = 20.0; // Default clamp at 20%
+
+double Kp1 = 2.0, Ki1 = 5.0, Kd1 = 1.0;
+PID topPID(&topTemperature, &topPeltierOutputPwm, &topSetPoint, Kp1, Ki1, Kd1, DIRECT);
+
+// PID parameters for bottom fridge
+double Kp2 = 2.0, Ki2 = 5.0, Kd2 = 1.0;
+PID bottomPID(&bottomTemperature, &bottomPeltierOutputPwm, &bottomSetPoint, Kp2, Ki2, Kd2, DIRECT);
+
+BLYNK_WRITE(V2)
+{
+  topSetPoint = param.asDouble();
+  // Removed unnecessary PID reset
+}
+
+BLYNK_WRITE(V3)
+{
+  bottomSetPoint = param.asDouble();
+  // Removed unnecessary PID reset
+}
+
+// Function to set up PWM with given frequency and resolution
+void setupPWM(int channel, int pin, int frequency, int resolution)
+{
+  ledcSetup(channel, frequency, resolution); // Set PWM frequency with specified resolution
+  ledcAttachPin(pin, channel);
+}
+
+// Function to update Peltier PWM output with clamping based on thresholds
+void updatePeltierPWM(int channel, double duty)
+{
+  double dutyPercent = (duty / MAX_PELTIER_DUTY) * 100.0; // Convert duty cycle to percentage
+
+  if (dutyPercent < peltierTwoSidedClamp)
+  {
+    // If duty cycle is less than threshold, set output LOW
+    ledcWrite(channel, 0);
+  }
+  else if (dutyPercent > (100.0 - peltierTwoSidedClamp))
+  {
+    // If duty cycle is greater than (100 - threshold), set output HIGH
+    ledcWrite(channel, MAX_PELTIER_DUTY); // Max for Peltier resolution
+  }
+  else
+  {
+    // Otherwise, use the computed PWM duty cycle
+    ledcWrite(channel, (int)duty);
+  }
+}
+
+// Function to update fan PWM output with fan clamp logic
+void updateFanPWM(int channel, double duty)
+{
+  // Map duty from Peltier resolution to Fan resolution
+  double dutyFan = (duty / MAX_PELTIER_DUTY) * MAX_FAN_DUTY;
+
+  double dutyPercent = (dutyFan / MAX_FAN_DUTY) * 100.0; // Convert duty cycle to percentage
+
+  if (duty == 0)
+  {
+    // If PID output is 0, turn off the fan
+    ledcWrite(channel, 0);
+  }
+  else if (dutyPercent < fanClamp)
+  {
+    // If duty cycle is below the fan clamp, set it to the fan clamp value
+    int fanPWM = (fanClamp / 100.0) * MAX_FAN_DUTY;
+    ledcWrite(channel, fanPWM);
+  }
+  else
+  {
+    // Otherwise, set the fan to the proportional PID output scaled to fan resolution
+    ledcWrite(channel, (int)dutyFan);
+  }
+}
 
 void setup()
 {
@@ -49,74 +154,124 @@ void setup()
   {
     swWires[i].begin();
     swWires[i].setClock(100000);
+  }
+  for (int i = 0; i < NUM_SENSORS; i++)
+  {
     sensors[i].begin();
     sensors[i].heatOff();
   }
 
   Blynk.begin(BLYNK_AUTH_TOKEN, ssid, password);
+
+  // Initialize the PWM channels with calculated resolutions
+  setupPWM(topPeltierPwmChannel, topPeltierPwmPin, PELTIER_HZ, PELTIER_RESOLUTION);
+  setupPWM(bottomPeltierPwmChannel, bottomPeltierPwmPin, PELTIER_HZ, PELTIER_RESOLUTION);
+  setupPWM(topFanChannel, topFanPin, FAN_HZ, FAN_RESOLUTION);
+  setupPWM(bottomFanChannel, bottomFanPin, FAN_HZ, FAN_RESOLUTION);
+
+  // Initialize PID controllers
+  topPID.SetOutputLimits(0, MAX_PELTIER_DUTY); // Set output limits for Peltier PID
+  bottomPID.SetOutputLimits(0, MAX_PELTIER_DUTY);
+
+  // Set PID sample times to match control loop timing (e.g., 1 second)
+  topPID.SetSampleTime(1000);
+  bottomPID.SetSampleTime(1000);
+
+  topPID.SetMode(AUTOMATIC);
+  bottomPID.SetMode(AUTOMATIC);
+}
+
+void readSensorsAndUpdateControl()
+{
+  // Read temperature and humidity sensors
+  for (int i = 0; i < NUM_SENSORS; i++)
+  {
+    sensors[i].requestData();
+    delay(50); // Wait for measurement to complete
+  }
+  topTemperature = sensors[0].getTemperature();
+  bottomTemperature = sensors[1].getTemperature();
+  float topHumidity = sensors[0].getHumidity();
+  float bottomHumidity = sensors[1].getHumidity();
+
+  // Send sensor data to Blynk
+  Blynk.virtualWrite(temperaturePins[0], topTemperature);
+  Blynk.virtualWrite(temperaturePins[1], bottomTemperature);
+  Blynk.virtualWrite(V4, bottomHumidity);
+  Blynk.virtualWrite(V5, topHumidity); // Assuming V5 is the virtual pin for top humidity
+
+  // Update the PID controllers
+  topPID.Compute();
+  bottomPID.Compute();
+
+  // Update fridge PWM outputs with clamping logic
+  updatePeltierPWM(topPeltierPwmChannel, topPeltierOutputPwm);
+  updatePeltierPWM(bottomPeltierPwmChannel, bottomPeltierOutputPwm);
+
+  // Update fan PWM outputs with fan clamp logic
+  updateFanPWM(topFanChannel, topPeltierOutputPwm);
+  updateFanPWM(bottomFanChannel, bottomPeltierOutputPwm);
+
+  // Convert PWM duty cycles to percentage
+  double topPeltierDutyPercent = (topPeltierOutputPwm / MAX_PELTIER_DUTY) * 100.0;
+  double bottomPeltierDutyPercent = (bottomPeltierOutputPwm / MAX_PELTIER_DUTY) * 100.0;
+
+  double topFanDutyPercent = (ledcRead(topFanChannel) / (double)MAX_FAN_DUTY) * 100.0;
+  double bottomFanDutyPercent = (ledcRead(bottomFanChannel) / (double)MAX_FAN_DUTY) * 100.0;
+
+  // Print temperature and humidity readings
+  Serial.println("===============================================");
+  Serial.println("                 Fridge Status                 ");
+  Serial.println("===============================================");
+  Serial.println("Top Fridge: ");
+  Serial.print("  Temperature:      ");
+  Serial.print(topTemperature);
+  Serial.println(" °C");
+  Serial.print("  Setpoint:         ");
+  Serial.print(topSetPoint);
+  Serial.println(" °C");
+  Serial.print("  Humidity:         ");
+  Serial.print(topHumidity);
+  Serial.println(" %");
+  Serial.print("  Peltier Duty:     ");
+  Serial.print(topPeltierDutyPercent);
+  Serial.println(" %");
+  Serial.print("  Fan Duty:         ");
+  Serial.print(topFanDutyPercent);
+  Serial.println(" %");
+  Serial.println("===============================================");
+
+  Serial.println("Bottom Fridge: ");
+  Serial.print("  Temperature:      ");
+  Serial.print(bottomTemperature);
+  Serial.println(" °C");
+  Serial.print("  Setpoint:         ");
+  Serial.print(bottomSetPoint);
+  Serial.println(" °C");
+  Serial.print("  Humidity:         ");
+  Serial.print(bottomHumidity);
+  Serial.println(" %");
+  Serial.print("  Peltier Duty:     ");
+  Serial.print(bottomPeltierDutyPercent);
+  Serial.println(" %");
+  Serial.print("  Fan Duty:         ");
+  Serial.print(bottomFanDutyPercent);
+  Serial.println(" %");
+  Serial.println("===============================================");
 }
 
 void loop()
 {
-  Blynk.run(); // Run Blynk
-  readSHT30Sensors();
-  delay(30000);
-}
+  static unsigned long lastUpdateTime = 0;
+  unsigned long currentTime = millis();
 
-void readSHT30Sensors()
-{
-  float temperature, humidity;
-  bool heaterState;
+  Blynk.run(); // Run Blynk as frequently as possible
 
-  for (int i = 0; i < NUM_SENSORS; i++)
+  if (currentTime - lastUpdateTime >= 1000)
   {
-    if (readSHT30(sensors[i], temperature, humidity, i + 1, heaterState))
-    {
-      Blynk.virtualWrite(temperaturePins[i], temperature);
-      Blynk.virtualWrite(humidityPins[i], humidity);
-      // printSensorReadings(humidity, temperature, i + 1, heaterState);
-    }
-  }
-}
+    lastUpdateTime = currentTime;
 
-// Function to print sensor readings
-void printSensorReadings(float humidity, float temperature, int sensorNumber, bool heaterState)
-{
-  Serial.print("Sensor ");
-  Serial.print(sensorNumber);
-  Serial.print(" - Humidity: ");
-  Serial.print(humidity);
-  Serial.print(" %\t");
-  Serial.print("Temperature: ");
-  Serial.print(temperature);
-  Serial.println(" *C");
-  Serial.print("Heater state: ");
-  Serial.println(heaterState ? "ON" : "OFF");
-}
-
-// Function to read SHT30 sensor using SoftWire
-bool readSHT30(SHT31_SW &sht, float &temperature, float &humidity, int sensorNumber, bool heaterState)
-{
-  sht.read();
-  temperature = sht.getTemperature();
-  humidity = sht.getHumidity();
-  heaterState = sht.isHeaterOn();
-  return true;
-}
-
-// Blynk function to handle heater control button press
-BLYNK_WRITE(heaterControlPin)
-{
-  heaterState = param.asInt(); // Get button state
-  for (int i = 0; i < NUM_SENSORS; i++)
-  {
-    if (heaterState)
-    {
-      sensors[i].heatOn(); // Turn on the heater
-    }
-    else
-    {
-      sensors[i].heatOff(); // Turn off the heater
-    }
+    // Read sensors and update control
+    readSensorsAndUpdateControl();
   }
 }
