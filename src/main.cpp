@@ -1,22 +1,17 @@
-#define BLYNK_TEMPLATE_ID "TMPL21t4sKyIX"
-#define BLYNK_TEMPLATE_NAME "Beetle fridge"
-#define BLYNK_AUTH_TOKEN "NgOCm-GhGQeLESgIqKQ54MaOrfZ88xJL"
 #define SHT31_ADDRESS 0x44
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include "secrets.h"
 #include <SoftWire.h>
 #include <SHT31_SW.h>
 #include <BlynkSimpleEsp32.h>
 #include <PID_v1.h>
-#include <math.h> // Include math library for log functions
-
-const char *ssid = "Not wifi";
-const char *password = "Notapassword";
+#include <math.h>
 
 const int NUM_SENSORS = 2;
-const int PELTIER_HZ = 50000; // 50 kHz for Peltiers
-const int FAN_HZ = 20000;     // 20 kHz for fans
+const int PELTIER_HZ = 50000;
+const int FAN_HZ = 20000;
 const int SENSOR_AND_PID_SAMPLE_TIME_MS = 1000;
 
 // Function to calculate maximum resolution based on frequency
@@ -160,7 +155,7 @@ void setup()
     sensors[i].heatOff();
   }
 
-  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, password);
+  Blynk.begin(BLYNK_AUTH_TOKEN, SSID, PASSWORD);
 
   // Initialize the PWM channels with calculated resolutions
   setupPWM(topPeltierPwmChannel, topPeltierPwmPin, PELTIER_HZ, PELTIER_RESOLUTION);
