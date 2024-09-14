@@ -1,8 +1,10 @@
 #define SHT31_ADDRESS 0x44
 
+#include "pid_params.h"
+#include "secrets.h"
+
 #include <Arduino.h>
 #include <WiFi.h>
-#include "secrets.h"
 #include <SoftWire.h>
 #include <SHT31_SW.h>
 #include <BlynkSimpleEsp32.h>
@@ -67,11 +69,9 @@ const double peltierTwoSidedClamp = 5.0; // 5% threshold for clamping
 double fanClamp = 20.0; // Default clamp at 20%
 
 // PID parameters (tuned for percentage output)
-double Kp1 = 191.82, Ki1 = 0.0, Kd1 = 0.0;
 PID topPID(&topTemperature, &topPeltierOutputPercent, &topSetPoint, Kp1, Ki1, Kd1, REVERSE);
 
 // PID parameters for bottom fridge
-double Kp2 = 191.82, Ki2 = 0.0, Kd2 = 0.0;
 PID bottomPID(&bottomTemperature, &bottomPeltierOutputPercent, &bottomSetPoint, Kp2, Ki2, Kd2, REVERSE);
 
 BLYNK_WRITE(V2)
