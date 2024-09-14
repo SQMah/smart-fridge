@@ -17,6 +17,7 @@ const char *password = "Notapassword";
 const int NUM_SENSORS = 2;
 const int PELTIER_HZ = 50000; // 50 kHz for Peltiers
 const int FAN_HZ = 20000;     // 20 kHz for fans
+const int SENSOR_AND_PID_SAMPLE_TIME_MS = 1000;
 
 // Function to calculate maximum resolution based on frequency
 int getMaxResolution(int frequency)
@@ -80,13 +81,11 @@ PID bottomPID(&bottomTemperature, &bottomPeltierOutputPwm, &bottomSetPoint, Kp2,
 BLYNK_WRITE(V2)
 {
   topSetPoint = param.asDouble();
-  // Removed unnecessary PID reset
 }
 
 BLYNK_WRITE(V3)
 {
   bottomSetPoint = param.asDouble();
-  // Removed unnecessary PID reset
 }
 
 // Function to set up PWM with given frequency and resolution
@@ -174,8 +173,8 @@ void setup()
   bottomPID.SetOutputLimits(0, MAX_PELTIER_DUTY);
 
   // Set PID sample times to match control loop timing (e.g., 1 second)
-  topPID.SetSampleTime(1000);
-  bottomPID.SetSampleTime(1000);
+  topPID.SetSampleTime(SENSOR_AND_PID_SAMPLE_TIME_MS);
+  bottomPID.SetSampleTime(SENSOR_AND_PID_SAMPLE_TIME_MS);
 
   topPID.SetMode(AUTOMATIC);
   bottomPID.SetMode(AUTOMATIC);
@@ -225,37 +224,37 @@ void readSensorsAndUpdateControl()
   Serial.println("===============================================");
   Serial.println("Top Fridge: ");
   Serial.print("  Temperature:      ");
-  Serial.print(topTemperature);
+  Serial.print(topTemperature, 2);
   Serial.println(" °C");
   Serial.print("  Setpoint:         ");
-  Serial.print(topSetPoint);
+  Serial.print(topSetPoint, 2);
   Serial.println(" °C");
   Serial.print("  Humidity:         ");
-  Serial.print(topHumidity);
+  Serial.print(topHumidity, 2);
   Serial.println(" %");
   Serial.print("  Peltier Duty:     ");
-  Serial.print(topPeltierDutyPercent);
+  Serial.print(topPeltierDutyPercent, 2);
   Serial.println(" %");
   Serial.print("  Fan Duty:         ");
-  Serial.print(topFanDutyPercent);
+  Serial.print(topFanDutyPercent, 2);
   Serial.println(" %");
   Serial.println("===============================================");
 
   Serial.println("Bottom Fridge: ");
   Serial.print("  Temperature:      ");
-  Serial.print(bottomTemperature);
+  Serial.print(bottomTemperature, 2);
   Serial.println(" °C");
   Serial.print("  Setpoint:         ");
-  Serial.print(bottomSetPoint);
+  Serial.print(bottomSetPoint, 2);
   Serial.println(" °C");
   Serial.print("  Humidity:         ");
-  Serial.print(bottomHumidity);
+  Serial.print(bottomHumidity, 2);
   Serial.println(" %");
   Serial.print("  Peltier Duty:     ");
-  Serial.print(bottomPeltierDutyPercent);
+  Serial.print(bottomPeltierDutyPercent, 2);
   Serial.println(" %");
   Serial.print("  Fan Duty:         ");
-  Serial.print(bottomFanDutyPercent);
+  Serial.print(bottomFanDutyPercent, 2);
   Serial.println(" %");
   Serial.println("===============================================");
 }
@@ -267,7 +266,7 @@ void loop()
 
   Blynk.run(); // Run Blynk as frequently as possible
 
-  if (currentTime - lastUpdateTime >= 1000)
+  if (currentTime - lastUpdateTime >= SENSOR_AND_PID_SAMPLE_TIME_MS)
   {
     lastUpdateTime = currentTime;
 
