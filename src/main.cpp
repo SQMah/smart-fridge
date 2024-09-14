@@ -55,10 +55,10 @@ const int bottomPeltierPwmChannel = 1; // PWM channel for bottom fridge
 const int topFanChannel = 2;           // PWM channel for top fan
 const int bottomFanChannel = 3;        // PWM channel for bottom fan
 
-double topSetPoint = 18.0;                          // Default set point for top fridge (18°C)
-double bottomSetPoint = 18.0;                       // Default set point for bottom fridge (18°C)
-double topTemperature, bottomTemperature;           // Measured temperatures
-double topPeltierOutputPwm, bottomPeltierOutputPwm; // PID outputs
+double topSetPoint = 18.0;                                  // Default set point for top fridge (18°C)
+double bottomSetPoint = 18.0;                               // Default set point for bottom fridge (18°C)
+double topTemperature, bottomTemperature;                   // Measured temperatures
+double topPeltierOutputPercent, bottomPeltierOutputPercent; // PID outputs in percentage
 
 // Threshold for clamping PWM to LOW or HIGH
 const double peltierTwoSidedClamp = 5.0; // 5% threshold for clamping
@@ -66,12 +66,13 @@ const double peltierTwoSidedClamp = 5.0; // 5% threshold for clamping
 // Fan clamp percentage (minimum speed)
 double fanClamp = 20.0; // Default clamp at 20%
 
-double Kp1 = 2.0, Ki1 = 5.0, Kd1 = 1.0;
-PID topPID(&topTemperature, &topPeltierOutputPwm, &topSetPoint, Kp1, Ki1, Kd1, DIRECT);
+// PID parameters (tuned for percentage output)
+double Kp1 = 191.82, Ki1 = 0.0, Kd1 = 0.0;
+PID topPID(&topTemperature, &topPeltierOutputPercent, &topSetPoint, Kp1, Ki1, Kd1, REVERSE);
 
 // PID parameters for bottom fridge
-double Kp2 = 2.0, Ki2 = 5.0, Kd2 = 1.0;
-PID bottomPID(&bottomTemperature, &bottomPeltierOutputPwm, &bottomSetPoint, Kp2, Ki2, Kd2, DIRECT);
+double Kp2 = 191.82, Ki2 = 0.0, Kd2 = 0.0;
+PID bottomPID(&bottomTemperature, &bottomPeltierOutputPercent, &bottomSetPoint, Kp2, Ki2, Kd2, REVERSE);
 
 BLYNK_WRITE(V2)
 {
@@ -91,10 +92,8 @@ void setupPWM(int channel, int pin, int frequency, int resolution)
 }
 
 // Function to update Peltier PWM output with clamping based on thresholds
-void updatePeltierPWM(int channel, double duty)
+void updatePeltierPWM(int channel, double dutyPercent)
 {
-  double dutyPercent = (duty / MAX_PELTIER_DUTY) * 100.0; // Convert duty cycle to percentage
-
   if (dutyPercent < peltierTwoSidedClamp)
   {
     // If duty cycle is less than threshold, set output LOW
@@ -107,20 +106,16 @@ void updatePeltierPWM(int channel, double duty)
   }
   else
   {
-    // Otherwise, use the computed PWM duty cycle
-    ledcWrite(channel, (int)duty);
+    // Otherwise, convert percentage to PWM duty cycle
+    int duty = (int)((dutyPercent / 100.0) * MAX_PELTIER_DUTY);
+    ledcWrite(channel, duty);
   }
 }
 
 // Function to update fan PWM output with fan clamp logic
-void updateFanPWM(int channel, double duty)
+void updateFanPWM(int channel, double dutyPercent)
 {
-  // Map duty from Peltier resolution to Fan resolution
-  double dutyFan = (duty / MAX_PELTIER_DUTY) * MAX_FAN_DUTY;
-
-  double dutyPercent = (dutyFan / MAX_FAN_DUTY) * 100.0; // Convert duty cycle to percentage
-
-  if (duty == 0)
+  if (dutyPercent == 0)
   {
     // If PID output is 0, turn off the fan
     ledcWrite(channel, 0);
@@ -128,13 +123,14 @@ void updateFanPWM(int channel, double duty)
   else if (dutyPercent < fanClamp)
   {
     // If duty cycle is below the fan clamp, set it to the fan clamp value
-    int fanPWM = (fanClamp / 100.0) * MAX_FAN_DUTY;
+    int fanPWM = (int)((fanClamp / 100.0) * MAX_FAN_DUTY);
     ledcWrite(channel, fanPWM);
   }
   else
   {
     // Otherwise, set the fan to the proportional PID output scaled to fan resolution
-    ledcWrite(channel, (int)dutyFan);
+    int dutyFan = (int)((dutyPercent / 100.0) * MAX_FAN_DUTY);
+    ledcWrite(channel, dutyFan);
   }
 }
 
@@ -164,8 +160,8 @@ void setup()
   setupPWM(bottomFanChannel, bottomFanPin, FAN_HZ, FAN_RESOLUTION);
 
   // Initialize PID controllers
-  topPID.SetOutputLimits(0, MAX_PELTIER_DUTY); // Set output limits for Peltier PID
-  bottomPID.SetOutputLimits(0, MAX_PELTIER_DUTY);
+  topPID.SetOutputLimits(0, 100); // Set output limits from 0% to 100%
+  bottomPID.SetOutputLimits(0, 100);
 
   // Set PID sample times to match control loop timing (e.g., 1 second)
   topPID.SetSampleTime(SENSOR_AND_PID_SAMPLE_TIME_MS);
@@ -199,19 +195,12 @@ void readSensorsAndUpdateControl()
   bottomPID.Compute();
 
   // Update fridge PWM outputs with clamping logic
-  updatePeltierPWM(topPeltierPwmChannel, topPeltierOutputPwm);
-  updatePeltierPWM(bottomPeltierPwmChannel, bottomPeltierOutputPwm);
+  updatePeltierPWM(topPeltierPwmChannel, topPeltierOutputPercent);
+  updatePeltierPWM(bottomPeltierPwmChannel, bottomPeltierOutputPercent);
 
   // Update fan PWM outputs with fan clamp logic
-  updateFanPWM(topFanChannel, topPeltierOutputPwm);
-  updateFanPWM(bottomFanChannel, bottomPeltierOutputPwm);
-
-  // Convert PWM duty cycles to percentage
-  double topPeltierDutyPercent = (topPeltierOutputPwm / MAX_PELTIER_DUTY) * 100.0;
-  double bottomPeltierDutyPercent = (bottomPeltierOutputPwm / MAX_PELTIER_DUTY) * 100.0;
-
-  double topFanDutyPercent = (ledcRead(topFanChannel) / (double)MAX_FAN_DUTY) * 100.0;
-  double bottomFanDutyPercent = (ledcRead(bottomFanChannel) / (double)MAX_FAN_DUTY) * 100.0;
+  updateFanPWM(topFanChannel, topPeltierOutputPercent);
+  updateFanPWM(bottomFanChannel, bottomPeltierOutputPercent);
 
   // Print temperature and humidity readings
   Serial.println("===============================================");
@@ -227,11 +216,8 @@ void readSensorsAndUpdateControl()
   Serial.print("  Humidity:         ");
   Serial.print(topHumidity, 2);
   Serial.println(" %");
-  Serial.print("  Peltier Duty:     ");
-  Serial.print(topPeltierDutyPercent, 2);
-  Serial.println(" %");
-  Serial.print("  Fan Duty:         ");
-  Serial.print(topFanDutyPercent, 2);
+  Serial.print("  Peltier Output:   ");
+  Serial.print(topPeltierOutputPercent, 2);
   Serial.println(" %");
   Serial.println("===============================================");
 
@@ -245,11 +231,8 @@ void readSensorsAndUpdateControl()
   Serial.print("  Humidity:         ");
   Serial.print(bottomHumidity, 2);
   Serial.println(" %");
-  Serial.print("  Peltier Duty:     ");
-  Serial.print(bottomPeltierDutyPercent, 2);
-  Serial.println(" %");
-  Serial.print("  Fan Duty:         ");
-  Serial.print(bottomFanDutyPercent, 2);
+  Serial.print("  Peltier Output:   ");
+  Serial.print(bottomPeltierOutputPercent, 2);
   Serial.println(" %");
   Serial.println("===============================================");
 }

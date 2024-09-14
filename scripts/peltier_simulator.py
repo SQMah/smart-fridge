@@ -2,7 +2,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize
 
-PID_MAX = 32767
 COOLING_ALPHA = 0.05
 
 
@@ -17,9 +16,7 @@ class PeltierSimulator:
         self.target_temp = (
             target_temp  # Target temperature to maintain inside the fridge
         )
-        self.current_temp = initial_temp  # Initial temperature
-        self.cooling_power = 0.0  # Cooling power from 0 to 100%
-        self.initial_temp = initial_temp
+        self.current_temp = initial_temp  # Current temperature
 
     def update(self, dt, cooling_power):
         """
@@ -27,9 +24,10 @@ class PeltierSimulator:
         cooling_power: Percentage of cooling (0 to 1.0), cannot drive in reverse.
         dt: Time step in minutes.
         """
-        cooling_power = cooling_power / PID_MAX - COOLING_ALPHA * (
-            21 - self.initial_temp - 3
-        )
+        # Adjust cooling_power based on current temperature
+        cooling_power = cooling_power - COOLING_ALPHA * (21 - self.current_temp - 3)
+        # Clamp cooling_power between 0 and 1
+        cooling_power = max(0.0, min(1.0, cooling_power))
         cooling_effect = -cooling_power * self.cooling_rate * dt
         heating_effect = self.heating_rate * (1 - cooling_power) * dt
         self.current_temp += cooling_effect + heating_effect
@@ -49,7 +47,7 @@ class PIDController:
     def update(self, error, dt):
         """
         Compute the PID control action.
-        error: The difference between the target temperature and the current temperature.
+        error: The difference between the current temperature and the target temperature.
         dt: Time step.
         """
         # Proportional term
@@ -61,7 +59,7 @@ class PIDController:
 
         # Derivative term
         derivative = 0
-        if self.previous_error is not None:
+        if self.previous_error is not None and dt != 0:
             derivative = (error - self.previous_error) / dt
         D = self.Kd * derivative
 
@@ -70,7 +68,8 @@ class PIDController:
 
         # Compute the control action (cooling power between 0 and 1)
         output = P + I + D
-        return max(0, min(PID_MAX, output))  # Clamp between 0 and 1
+        # Clamp between 0 and 1
+        return max(0.0, min(1.0, output))
 
 
 def simulate_pid_control(
@@ -138,7 +137,7 @@ def plot_simulation_results(
     simulation_time,
     dt,
 ):
-    fig, axs = plt.subplots(len(initial_temps), 2, figsize=(10, len(initial_temps) * 4))
+    fig, axs = plt.subplots(len(initial_temps), 2, figsize=(12, len(initial_temps) * 4))
 
     for i, initial_temp in enumerate(initial_temps):
         time_points, temperature_history, cooling_power_history = simulate_pid_control(
@@ -160,15 +159,17 @@ def plot_simulation_results(
         axs[i, 0].set_xlabel("Time (minutes)")
         axs[i, 0].set_ylabel("Temperature (°C)")
         axs[i, 0].legend()
+        axs[i, 0].set_title("Temperature vs. Time")
 
         axs[i, 1].plot(
             time_points,
-            np.array(cooling_power_history) / PID_MAX,
+            cooling_power_history,
             label=f"Initial Temp: {initial_temp}°C",
         )
         axs[i, 1].set_xlabel("Time (minutes)")
         axs[i, 1].set_ylabel("Cooling Power (0-1)")
         axs[i, 1].legend()
+        axs[i, 1].set_title("Cooling Power vs. Time")
 
     plt.tight_layout()
     plt.show()
@@ -185,7 +186,7 @@ if __name__ == "__main__":
     dt = 0.1  # Time step for simulation in minutes
 
     # Initial guesses for Kp, Ki, Kd
-    initial_guess = [60000, 1000, 1000]
+    initial_guess = [100, 10, 0.1]
 
     # Find the optimal Kp, Ki, Kd values using optimization
     result = minimize(
@@ -199,9 +200,11 @@ if __name__ == "__main__":
             simulation_time,
             dt,
         ),
-        bounds=[(0, 1000000), (0, 10000), (0, 10000)],
+        bounds=[(0, 1e6), (0, 1e4), (0, 1e4)],
+        method="L-BFGS-B",
     )
-    Kp_opt, Ki_opt, Kd_opt = 2000000, 10000, 100
+
+    Kp_opt, Ki_opt, Kd_opt = result.x
     print(f"Optimal Kp: {Kp_opt}, Ki: {Ki_opt}, Kd: {Kd_opt}")
 
     # Plot simulation results for all initial temperatures
