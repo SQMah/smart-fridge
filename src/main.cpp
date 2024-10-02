@@ -16,6 +16,21 @@ const int PELTIER_HZ = 50000;
 const int FAN_HZ = 20000;
 const int SENSOR_AND_PID_SAMPLE_TIME_MS = 1000;
 
+// Moving average size
+const int movingAverageSize = 5;
+
+// Arrays to hold temperature and humidity readings for moving average
+double topTemperatureReadings[movingAverageSize] = {0.0};
+double bottomTemperatureReadings[movingAverageSize] = {0.0};
+double topHumidityReadings[movingAverageSize] = {0.0};
+double bottomHumidityReadings[movingAverageSize] = {0.0};
+
+// Indices and counters for moving average calculations
+int topReadingIndex = 0;
+int bottomReadingIndex = 0;
+int numTopReadings = 0;
+int numBottomReadings = 0;
+
 // Function to calculate maximum resolution based on frequency
 int getMaxResolution(int frequency)
 {
@@ -59,14 +74,14 @@ const int bottomFanChannel = 3;        // PWM channel for bottom fan
 
 double topSetPoint = 18.0;                                  // Default set point for top fridge (18°C)
 double bottomSetPoint = 18.0;                               // Default set point for bottom fridge (18°C)
-double topTemperature, bottomTemperature;                   // Measured temperatures
+double topTemperature, bottomTemperature;                   // Averaged temperatures
 double topPeltierOutputPercent, bottomPeltierOutputPercent; // PID outputs in percentage
 
 // Threshold for clamping PWM to LOW or HIGH
 const double peltierTwoSidedClamp = 5.0; // 5% threshold for clamping
 
 // Fan clamp percentage (minimum speed)
-double fanClamp = 20.0; // Default clamp at 20%
+double fanClamp = 40.0; // Default clamp at 20%
 
 // PID parameters (tuned for percentage output)
 PID topPID(&topTemperature, &topPeltierOutputPercent, &topSetPoint, Kp1, Ki1, Kd1, REVERSE);
@@ -179,10 +194,52 @@ void readSensorsAndUpdateControl()
     sensors[i].requestData();
     delay(50); // Wait for measurement to complete
   }
-  topTemperature = sensors[0].getTemperature();
-  bottomTemperature = sensors[1].getTemperature();
-  float topHumidity = sensors[0].getHumidity();
-  float bottomHumidity = sensors[1].getHumidity();
+  sensors[0].read();
+  sensors[1].read();
+
+  // Get current readings
+  double currentTopTemperature = sensors[0].getTemperature();
+  double currentBottomTemperature = sensors[1].getTemperature();
+  double currentTopHumidity = sensors[0].getHumidity();
+  double currentBottomHumidity = sensors[1].getHumidity();
+
+  // Store readings in arrays
+  topTemperatureReadings[topReadingIndex] = currentTopTemperature;
+  topHumidityReadings[topReadingIndex] = currentTopHumidity;
+  bottomTemperatureReadings[bottomReadingIndex] = currentBottomTemperature;
+  bottomHumidityReadings[bottomReadingIndex] = currentBottomHumidity;
+
+  // Increment indices and wrap around if necessary
+  topReadingIndex = (topReadingIndex + 1) % movingAverageSize;
+  bottomReadingIndex = (bottomReadingIndex + 1) % movingAverageSize;
+
+  // Keep track of the number of readings for moving average calculation
+  if (numTopReadings < movingAverageSize)
+    numTopReadings++;
+  if (numBottomReadings < movingAverageSize)
+    numBottomReadings++;
+
+  // Compute moving averages
+  double sumTopTemp = 0.0;
+  double sumBottomTemp = 0.0;
+  double sumTopHumidity = 0.0;
+  double sumBottomHumidity = 0.0;
+
+  for (int i = 0; i < numTopReadings; i++)
+  {
+    sumTopTemp += topTemperatureReadings[i];
+    sumTopHumidity += topHumidityReadings[i];
+  }
+  for (int i = 0; i < numBottomReadings; i++)
+  {
+    sumBottomTemp += bottomTemperatureReadings[i];
+    sumBottomHumidity += bottomHumidityReadings[i];
+  }
+
+  topTemperature = sumTopTemp / numTopReadings;
+  bottomTemperature = sumBottomTemp / numBottomReadings;
+  float topHumidity = sumTopHumidity / numTopReadings;
+  float bottomHumidity = sumBottomHumidity / numBottomReadings;
 
   // Send sensor data to Blynk
   Blynk.virtualWrite(temperaturePins[0], topTemperature);
@@ -207,34 +264,38 @@ void readSensorsAndUpdateControl()
   Serial.println("                 Fridge Status                 ");
   Serial.println("===============================================");
   Serial.println("Top Fridge: ");
-  Serial.print("  Temperature:      ");
+  Serial.print("  Temperature (Avg): ");
   Serial.print(topTemperature, 2);
   Serial.println(" °C");
   Serial.print("  Setpoint:         ");
   Serial.print(topSetPoint, 2);
   Serial.println(" °C");
-  Serial.print("  Humidity:         ");
+  Serial.print("  Humidity (Avg):   ");
   Serial.print(topHumidity, 2);
   Serial.println(" %");
   Serial.print("  Peltier Output:   ");
   Serial.print(topPeltierOutputPercent, 2);
   Serial.println(" %");
-  Serial.println("===============================================");
+  Serial.print("  Fan Output:       ");
+  Serial.print(topPeltierOutputPercent, 2);
+  Serial.println(" %");
 
   Serial.println("Bottom Fridge: ");
-  Serial.print("  Temperature:      ");
+  Serial.print("  Temperature (Avg): ");
   Serial.print(bottomTemperature, 2);
   Serial.println(" °C");
-  Serial.print("  Setpoint:         ");
+  Serial.print("  Setpoint:          ");
   Serial.print(bottomSetPoint, 2);
   Serial.println(" °C");
-  Serial.print("  Humidity:         ");
+  Serial.print("  Humidity (Avg):    ");
   Serial.print(bottomHumidity, 2);
   Serial.println(" %");
-  Serial.print("  Peltier Output:   ");
+  Serial.print("  Peltier Output:    ");
   Serial.print(bottomPeltierOutputPercent, 2);
   Serial.println(" %");
-  Serial.println("===============================================");
+  Serial.print("  Fan Output:        ");
+  Serial.print(bottomPeltierOutputPercent, 2);
+  Serial.println(" %");
 }
 
 void loop()
